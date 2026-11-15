@@ -98,6 +98,9 @@ float t = 0.0;
 float h = 0.0;
 float smoothtemp;
 float smoothhum;
+unsigned long totalPeriod = 0;
+unsigned long ledPeriod = 0;
+bool blinking = false;
 
 int apiCode[4] = {200, 200, 200, 200};
 const char apiTag[4] = {'W', 'C', 'S', 'T'};
@@ -141,6 +144,11 @@ MovingAverage humSensorAvg(25);
 
 // ===== UI =====
 void drawUI() {
+  const int barWidth = tft.width();  // 128 pixels
+  const int barHeight = 10;
+  const int barX = 0;
+  const int barY = tft.height() - barHeight;
+
   tft.setTextColor(ST77XX_GREEN, ST77XX_BLACK);
   tft.setTextSize(3);
   tft.setCursor(50, 50);
@@ -177,6 +185,8 @@ void drawUI() {
 
   if(statuscontrol == false){
     tft.setCursor(30, 149);
+    // Clear previous bar
+    tft.fillRect(0, barY - 5, barWidth, barHeight + 5, ST77XX_BLACK);
     tft.print("Press button");
   }else{
     tft.setCursor(0, 149);
@@ -218,6 +228,7 @@ void tickTimer() {
     unsigned long remainingMs = totalDurationMs - elapsed;
     settime = (int)((remainingMs + 59999UL) / 60000UL) - 1;
     if (settime < 0) settime = 0;
+    blinkLED();
   }
 }
 
@@ -604,6 +615,7 @@ void setup() {
 
   pinMode(button, INPUT_PULLUP);   
   pinMode(buzzer, OUTPUT);
+  pinMode(LED, OUTPUT);
   digitalWrite(buzzer, LOW);
 
   SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI);
@@ -719,7 +731,7 @@ void handleButton() {
     }
     ringTone(500);
     // 1–4 presses → start timer
-    pressCountToMinutes = pressCount * 15;   // ORIGINAL BEHAVIOR
+    pressCountToMinutes = pressCount * 15;   // Timer is multiples of 15 minutes
     settime = pressCountToMinutes;
 
     pomodoroStartTime = millis();
@@ -823,5 +835,19 @@ void drawTimeBar() {
   // Draw remaining time
   if (remainingWidth > 0) {
     tft.fillRect(barX, barY, remainingWidth, barHeight, mygreen);
+  }
+}
+void blinkLED(){
+  if((millis() - totalPeriod > 5000) && blinking == false){
+    totalPeriod= millis();
+    ledPeriod = millis();
+    digitalWrite(LED, HIGH);
+    blinking= true;
+  }else{
+    if((millis() - ledPeriod > 300) && blinking == true){
+      
+      digitalWrite(LED, LOW);
+      blinking = false;
+    }
   }
 }
