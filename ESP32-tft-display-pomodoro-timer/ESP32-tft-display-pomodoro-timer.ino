@@ -169,7 +169,7 @@ void drawUI() {
 
   tft.setTextColor(ST77XX_GREEN, ST77XX_BLACK);
   tft.setTextSize(3);
-  tft.setCursor(50, 50);
+  tft.setCursor(30, 50);
   if(statuscontrol == false){
     tft.print("--");
   }else{
@@ -178,28 +178,28 @@ void drawUI() {
   }  
   
   tft.setTextSize(1);
-  tft.setCursor(100, 55);
+  tft.setCursor(85, 55);
   tft.print("min");
   tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
   // Date
-  tft.setCursor(30, 90);
+  tft.setCursor(15, 90);
   tft.print(currentDate);
   // Time
-  tft.setCursor(30, 103);
+  tft.setCursor(15, 103);
   char timeBuffer[12];
   snprintf(timeBuffer, sizeof(timeBuffer), "%02d:%02d %s",
            currentHour, currentMinute, ampm.c_str());
   tft.print(timeBuffer);
   
-  tft.setCursor(30, 116);
+  tft.setCursor(15, 116);
   drawClock2Icon();
   tft.print(smoothtemp);
-  tft.setCursor(60, 116);
+  tft.setCursor(45, 116);
   tft.print(" oC");
-  tft.setCursor(30, 129);
+  tft.setCursor(15, 129);
   drawCloudIcon();
   tft.print(smoothhum);
-  tft.setCursor(60, 129);
+  tft.setCursor(45, 129);
   tft.print(" %");
   
   
@@ -874,7 +874,7 @@ void blinkLED(){
 
 void drawCloudIcon() {
   tft.drawBitmap(
-    100,               // X position
+    85,               // X position
     116,               // Y position
     cloud,
     CLOUD_WIDTH,
@@ -884,7 +884,7 @@ void drawCloudIcon() {
 }
 void drawClock2Icon() {
   tft.drawBitmap(
-    100,               // X position
+    85,               // X position
     90,               // Y position
     clock2,
     CLOCK2_WIDTH,
