@@ -17,8 +17,7 @@
 #include <Preferences.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_AHTX0.h>
-
-
+	
 #define button 18
 #define buzzer 19
 #define LED 15
@@ -645,7 +644,6 @@ void setup() {
   SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI);
   // Use this initializer if using a 1.8" TFT screen:
   tft.initR(INITR_BLACKTAB);      // Init ST7735S chip, black tab
-
   uint16_t time = millis();
   tft.fillScreen(ST77XX_BLACK); 
 
