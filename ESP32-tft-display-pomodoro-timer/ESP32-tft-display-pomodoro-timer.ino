@@ -190,7 +190,7 @@ void drawUI() {
     tft.print("--");
   } 
   else if (settime < 1) {
-    UI_INTERVAL_MS = 5000;
+    UI_INTERVAL_MS = 1000;
     // Display seconds with two digits
     tft.printf("%02lu", remainingMs / 1000);
     tft.setTextSize(1);
