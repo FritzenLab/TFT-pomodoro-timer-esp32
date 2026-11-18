@@ -242,7 +242,7 @@ void tickTimer() {
     settime = 0;
     statuscontrol = false;
     if (justFinished) {
-      ringTone(500);
+      ringTone(1000);
       justFinished = false;
     }
   } else {
