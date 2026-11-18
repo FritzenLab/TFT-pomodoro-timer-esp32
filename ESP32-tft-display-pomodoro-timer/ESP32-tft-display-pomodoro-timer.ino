@@ -100,9 +100,21 @@ float smoothhum;
 unsigned long totalPeriod = 0;
 unsigned long ledPeriod = 0;
 bool blinking = false;
+unsigned long remainingMs = 0;
+bool forceUIRefresh = false;
 
 int apiCode[4] = {200, 200, 200, 200};
 const char apiTag[4] = {'W', 'C', 'S', 'T'};
+
+// ===== Scheduling =====
+unsigned long lastTimeUpdate     = 0;
+unsigned long lastUIRefresh      = 0;
+unsigned long lastSensorUpdate   = 0;
+
+
+const unsigned long TIME_INTERVAL_MS     = 60000;
+unsigned long UI_INTERVAL_MS       = 30000;
+const unsigned long SENSOR_INTERVAL_MS   = 5000;
 
 #define CLOUD_WIDTH  23
 #define CLOUD_HEIGHT 16
@@ -167,19 +179,32 @@ void drawUI() {
   const int barX = 0;
   const int barY = tft.height() - barHeight;
 
+  
+  // ===== Pomodoro display =====
   tft.setTextColor(ST77XX_GREEN, ST77XX_BLACK);
+  // Clear the entire timer display area before drawing new values
+  tft.fillRect(20, 45, 100, 35, ST77XX_BLACK);
   tft.setTextSize(3);
   tft.setCursor(30, 50);
-  if(statuscontrol == false){
+  if (!statuscontrol) {
     tft.print("--");
-  }else{
-    if (settime < 10) tft.print("0");
+  } 
+  else if (settime < 1) {
+    UI_INTERVAL_MS = 5000;
+    // Display seconds with two digits
+    tft.printf("%02lu", remainingMs / 1000);
+    tft.setTextSize(1);
+    tft.setCursor(85, 55);
+    tft.print("sec");
+  } 
+  else {
     tft.print(settime);
+    tft.setTextSize(1);
+    tft.setCursor(85, 55);
+    tft.print("min");
   }  
   
   tft.setTextSize(1);
-  tft.setCursor(85, 55);
-  tft.print("min");
   tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
   // Date
   tft.setCursor(15, 90);
@@ -241,12 +266,14 @@ void tickTimer() {
   if (elapsed >= totalDurationMs) {
     settime = 0;
     statuscontrol = false;
+    forceUIRefresh = true;  // Force immediate screen update
     if (justFinished) {
       ringTone(1000);
       justFinished = false;
+      UI_INTERVAL_MS = 30000;     
     }
   } else {
-    unsigned long remainingMs = totalDurationMs - elapsed;
+    remainingMs = totalDurationMs - elapsed;
     settime = (int)((remainingMs + 59999UL) / 60000UL) - 1;
     if (settime < 0) settime = 0;
     blinkLED();
@@ -563,15 +590,6 @@ void getTime() {
   }
 }
 
-// ===== Scheduling =====
-unsigned long lastTimeUpdate     = 0;
-unsigned long lastUIRefresh      = 0;
-unsigned long lastSensorUpdate   = 0;
-
-
-const unsigned long TIME_INTERVAL_MS     = 60000;
-const unsigned long UI_INTERVAL_MS       = 30000;
-const unsigned long SENSOR_INTERVAL_MS   = 5000;
 // ===== Internet watchdog =====
 void internetWatchdog() {
   unsigned long nowMs = millis();
@@ -821,8 +839,9 @@ void loop() {
   }
 
   // ===== Display refresh =====
-  if ((nowMs - lastUIRefresh > UI_INTERVAL_MS) || justStarted) {
+  if ((nowMs - lastUIRefresh > UI_INTERVAL_MS) || justStarted || forceUIRefresh) {
     justStarted = false;
+    forceUIRefresh = false;
     lastUIRefresh = nowMs;
     drawUI();
   }
