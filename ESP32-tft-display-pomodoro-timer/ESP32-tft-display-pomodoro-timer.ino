@@ -666,11 +666,11 @@ void setup() {
   // large block of text
   tft.setTextSize(2);
   tft.fillScreen(ST77XX_BLACK);
-  tft.setCursor(20, 5);
+  tft.setCursor(15, 5);
   //tft.setTextColor(ST77XX_GREEN);
   tft.setTextColor(mygreen);
   tft.println("Pomodoro");  
-  tft.setCursor(20, 22);
+  tft.setCursor(30, 22);
   tft.println("Timer");  
 
   if (! aht.begin()) {
