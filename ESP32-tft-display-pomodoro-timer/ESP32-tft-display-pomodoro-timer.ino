@@ -17,7 +17,9 @@
 #include <Preferences.h>
 #include <Adafruit_Sensor.h>
 #include "Adafruit_HTU21DF.h"
-	
+#include <time.h>
+#include <WiFiUdp.h>
+
 #define button 18
 #define buzzer 19
 #define LED 15
@@ -26,9 +28,10 @@
 #define TFT_DC         4
 #define SPI_SCK   6
 #define SPI_MOSI  7
-#define SPI_MISO  0
+#define SPI_MISO  1
 
-#define mygreen 0xBF66
+#define myred 0xF800
+#define myorange 0xEA8A
 
 // For 1.44" and 1.8" TFT with ST7735 use:
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
@@ -41,8 +44,6 @@ Preferences prefs;
 
 const char* ssid     = WIFI_SSID;
 const char* password = WIFI_PASSWORD;
-const char* mycity = MY_CITY;
-const char* timekey= TIMEZONEDB_API_KEY;
 const char* networkName   = AP_NETWORK_NAME;
 
 bool isConnected       = false;
@@ -101,6 +102,7 @@ unsigned long ledPeriod = 0;
 bool blinking = false;
 unsigned long remainingMs = 0;
 bool forceUIRefresh = false;
+const unsigned long ledTiming = 150;
 
 int apiCode[4] = {200, 200, 200, 200};
 const char apiTag[4] = {'W', 'C', 'S', 'T'};
@@ -110,10 +112,14 @@ unsigned long lastTimeUpdate     = 0;
 unsigned long lastUIRefresh      = 0;
 unsigned long lastSensorUpdate   = 0;
 
-
 const unsigned long TIME_INTERVAL_MS     = 60000;
 unsigned long UI_INTERVAL_MS       = 30000;
-const unsigned long SENSOR_INTERVAL_MS   = 5000;
+const unsigned long SENSOR_INTERVAL_MS   = 30000;
+const unsigned long WIFI_SYNC_INTERVAL_MS =
+    30UL * 60UL * 1000UL;
+unsigned long lastNTPSync = 0;
+unsigned long lastSyncAttempt = 0;
+WiFiUDP ntpUDP;
 
 #define CLOUD_WIDTH  23
 #define CLOUD_HEIGHT 16
@@ -173,14 +179,14 @@ MovingAverage humSensorAvg(25);
 
 // ===== UI =====
 void drawUI() {
+  updateClock();
   const int barWidth = tft.width();  // 128 pixels
   const int barHeight = 10;
   const int barX = 0;
   const int barY = tft.height() - barHeight;
 
-  
   // ===== Pomodoro display =====
-  tft.setTextColor(ST77XX_GREEN, ST77XX_BLACK);
+  tft.setTextColor(myorange, ST77XX_BLACK);
   // Clear the entire timer display area before drawing new values
   tft.fillRect(20, 45, 100, 35, ST77XX_BLACK);
   tft.setTextSize(3);
@@ -189,7 +195,7 @@ void drawUI() {
     tft.print("--");
   } 
   else if (settime < 1) {
-    UI_INTERVAL_MS = 1000;
+    UI_INTERVAL_MS = 250; // was 1000
     // Display seconds with two digits
     tft.printf("%02lu", remainingMs / 1000);
     tft.setTextSize(1);
@@ -304,43 +310,6 @@ bool connectSavedWiFi() {
   } else {
     Serial.println("Failed to connect to saved WiFi.");
     return false;
-  }
-}
-
-void ensureWiFi() {
-  if (WiFi.status() == WL_CONNECTED) {
-    isConnected = true;
-    wifiWasDown = false;
-    wifiDownSince = 0;
-    return;
-  }
-
-  if (!wifiWasDown) {
-    wifiWasDown = true;
-    wifiDownSince = millis();
-  }
-
-  Serial.println("WiFi lost. Reconnecting...");
-  WiFi.disconnect();
-  WiFi.begin(ssid, password);
-
-  unsigned long startAttempt = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 8000) {
-    delay(200);
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("WiFi reconnected.");
-    isConnected = true;
-    wifiWasDown = false;
-    wifiDownSince = 0;
-  } else {
-    Serial.println("WiFi failed to reconnect.");
-    isConnected = false;
-    if (millis() - wifiDownSince > WIFI_RESTART_TIMEOUT_MS) {
-      Serial.println("WiFi down too long. Restarting ESP32...");
-      ESP.restart();
-    }
   }
 }
 
@@ -479,169 +448,125 @@ void startAPPortal() {
   portalRunning = true;
 }
 
-void getTime() {
-  if (!isConnected || portalRunning) {
+void updateClock() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo, 10)) {
+    Serial.println("[CLOCK] System time unavailable");
     return;
   }
-  
-  String url = "https://api.timezonedb.com/v2.1/get-time-zone?key=" + String(timekey) + "&format=json&by=zone&zone=" + String(mycity);
+  // Date
+  char dateBuffer[11];
+  strftime(dateBuffer, sizeof(dateBuffer),
+           "%Y-%m-%d", &timeinfo);
 
-  WiFiClientSecure secureClient;
-  secureClient.setInsecure();
-  HTTPClient http;
-
-  if (http.begin(secureClient, url)) {
-    http.setReuse(false);
-    http.setTimeout(5000);
-    int httpCode = http.GET();
-    apiCode[3] = httpCode;   // getTime()
-    if (httpCode != 200) {
-      Serial.print("[TIME] HTTP request failed, code: ");
-      Serial.println(httpCode);
-    }
-
-    if (httpCode == 200) {
-      DynamicJsonDocument doc(512);
-      String payload = http.getString();  // pulls everything fast
-      yield();
-
-      DeserializationError err = deserializeJson(doc, payload);
-      if (err) {
-        // ArduinoJson error codes: https://arduinojson.org/v6/api/misc/deserializationerror/
-        Serial.print("[TIME] JSON parse failed: ");
-        Serial.println(err.c_str());
-      }
-
-      if (!err) {
-        const char* datetime = doc["formatted"];
-
-        // doc["formatted"] returns nullptr if the key is missing (e.g. an
-        // error payload from an exceeded API quota), so guard against that
-        // before strncpy to avoid undefined behavior on a null source:
-        // https://arduinojson.org/v6/api/jsonvariant/as/
-        if (datetime == nullptr) { apiCode[3] = -100; return; }
-
-        char dateBuf[11];
-        char hourBuf[3];
-        char minBuf[3];
-
-        strncpy(dateBuf, datetime, 10);
-        dateBuf[10] = '\0';
-
-        strncpy(hourBuf, datetime + 11, 2);
-        hourBuf[2] = '\0';
-
-        strncpy(minBuf, datetime + 14, 2);
-        minBuf[2] = '\0';
-
-        currentDate = String(dateBuf);
-        currentHour = atoi(hourBuf);
-        if(atoi(hourBuf)> 12){
-          currentHour= atoi(hourBuf) - 12;
-          ampm= "PM";
-        }else{
-          currentHour= atoi(hourBuf);
-          ampm= "AM";
-        }
-        currentMinute = atoi(minBuf);
-        lastApiSuccess = millis();
-        // Derive weekday name from currentDate ("YYYY-MM-DD").
-        // https://cplusplus.com/reference/ctime/tm/
-        struct tm dowInfo = {0};
-        dowInfo.tm_year = currentDate.substring(0, 4).toInt() - 1900;
-        dowInfo.tm_mon  = currentDate.substring(5, 7).toInt() - 1;
-        dowInfo.tm_mday = currentDate.substring(8, 10).toInt();
-        dowInfo.tm_hour = 12;  // noon avoids DST/timezone edge cases
-
-        // mktime() fills in tm_wday (0=Sunday..6=Saturday) as a side effect.
-        // https://cplusplus.com/reference/ctime/mktime/
-        mktime(&dowInfo);
-
-        // %A = full weekday name, locale-dependent (default "C" locale = English).
-        // https://cplusplus.com/reference/ctime/strftime/
-        char dowBuf[10];
-        strftime(dowBuf, sizeof(dowBuf), "%A", &dowInfo);
-        currentDayOfWeek = String(dowBuf);
-
-        if(currentDayOfWeek == "Sunday"){
-          currentDayOfWeek= "Sun";
-        }else if(currentDayOfWeek == "Monday"){
-          currentDayOfWeek= "Mon";
-        }else if(currentDayOfWeek == "Tuesday"){
-          currentDayOfWeek= "Tue";
-        }else if(currentDayOfWeek == "Wednesday"){
-          currentDayOfWeek= "Wed";
-        }else if(currentDayOfWeek == "Thursday"){
-          currentDayOfWeek= "Thu";
-        }else if(currentDayOfWeek == "Friday"){
-          currentDayOfWeek= "Fri";
-        }else if(currentDayOfWeek == "Saturday"){
-          currentDayOfWeek= "Sat";
-        }else{
-          currentDayOfWeek= "NaN";
-        }
-        
-        
-      }
-    }
-
-    http.end();
+  currentDate = String(dateBuffer);
+  // Hour (12-hour format)
+  currentHour = timeinfo.tm_hour % 12;
+  if (currentHour == 0) {
+    currentHour = 12;
   }
+  ampm = (timeinfo.tm_hour >= 12) ? "PM" : "AM";
+  // Minutes
+  currentMinute = timeinfo.tm_min;
+  // Weekday
+  const char* days[] = {
+    "Sun", "Mon", "Tue", "Wed",
+    "Thu", "Fri", "Sat"
+  };
+  currentDayOfWeek = days[timeinfo.tm_wday];
 }
 
-// ===== Internet watchdog =====
-void internetWatchdog() {
-  unsigned long nowMs = millis();
+bool syncClock() {
+  Serial.println("[NTP] Synchronizing clock...");
 
-  // Only evaluate every 30 s (loop() runs every ~10 ms)
-  static unsigned long lastCheck = 0;
-  if (nowMs - lastCheck < 30000UL) return;
-  lastCheck = nowMs;
+  lastSyncAttempt = millis();
 
-  unsigned long stalledFor = nowMs - lastApiSuccess;
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
 
-  // APIs are working -> re-arm the watchdog
-  if (stalledFor < API_STALL_RESET_MS) {
-    wifiHardResetDone = false;
-    return;
+  unsigned long startAttempt = millis();
+
+  while (WiFi.status() != WL_CONNECTED &&
+         millis() - startAttempt < 10000) {
+
+    delay(100);
   }
 
-  // Evidence for next time: link state, signal and heap health.
-  // Serial.printf: https://github.com/espressif/arduino-esp32/blob/master/cores/esp32/Print.h
-  // WiFi.status()/WiFi.RSSI(): https://docs.espressif.com/projects/arduino-esp32/en/latest/api/wifi.html
-  // ESP.getFreeHeap()/getMaxAllocHeap() (largest contiguous block, what TLS needs):
-  // https://github.com/espressif/arduino-esp32/blob/master/cores/esp32/Esp.h
-  Serial.printf("[WDT] no API success for %lu s | wifi=%d rssi=%d freeHeap=%u maxBlock=%u\n",
-                stalledFor / 1000UL, (int)WiFi.status(), WiFi.RSSI(),
-                (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+  bool success = false;
 
-  // Stage 2: radio restart didn't help -> reboot (not while a Pomodoro is running)
-  if (stalledFor >= API_STALL_REBOOT_MS) {
-    if (!statuscontrol) {
-      Serial.println("[WDT] still no internet, rebooting");
-      delay(100);
-      // https://github.com/espressif/arduino-esp32/blob/master/cores/esp32/Esp.h
-      ESP.restart();
+  if (WiFi.status() == WL_CONNECTED) {
+
+    IPAddress ntpIP;
+
+    if (WiFi.hostByName("pool.ntp.org", ntpIP)) {
+
+      byte packetBuffer[48] = {0};
+
+      packetBuffer[0] = 0b11100011;
+      packetBuffer[1] = 0;
+      packetBuffer[2] = 6;
+      packetBuffer[3] = 0xEC;
+
+      ntpUDP.begin(2390);
+
+      ntpUDP.beginPacket(ntpIP, 123);
+      ntpUDP.write(packetBuffer, 48);
+      ntpUDP.endPacket();
+
+      unsigned long startWait = millis();
+
+      while (millis() - startWait < 2000) {
+
+        int packetSize = ntpUDP.parsePacket();
+
+        if (packetSize >= 48) {
+
+          ntpUDP.read(packetBuffer, 48);
+
+          unsigned long seconds1900 =
+              ((unsigned long)packetBuffer[40] << 24) |
+              ((unsigned long)packetBuffer[41] << 16) |
+              ((unsigned long)packetBuffer[42] << 8) |
+              ((unsigned long)packetBuffer[43]);
+
+          time_t unixTime =
+              seconds1900 - 2208988800UL;
+
+          struct timeval tv;
+
+          tv.tv_sec = unixTime;
+          tv.tv_usec = 0;
+
+          settimeofday(&tv, nullptr);
+
+          lastNTPSync = millis();
+
+          success = true;
+
+          Serial.println("[NTP] Synchronization successful");
+
+          updateClock();
+
+          break;
+        }
+
+        delay(10);
+      }
+
+      ntpUDP.stop();
     }
-    return;
   }
 
-  // Stage 1: full radio restart, once per stall
-  if (!wifiHardResetDone) {
-    wifiHardResetDone = true;
-    Serial.println("[WDT] restarting Wi-Fi radio");
-
-    // disconnect(true) turns the radio off; connectSavedWiFi() calls WiFi.mode(WIFI_STA) to turn it back on
-    // https://docs.espressif.com/projects/arduino-esp32/en/latest/api/wifi.html
-    WiFi.disconnect(true);
-    delay(500);
-    isConnected = connectSavedWiFi();
-
-    if (isConnected) {
-      // Make every API refresh on the next loop() pass instead of waiting for its interval
-      lastTimeUpdate     = nowMs - TIME_INTERVAL_MS     - 1;
-    }
+  if (!success) {
+    Serial.println("[NTP] Synchronization failed");
   }
+
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+
+  isConnected = false;
+
+  return success;
 }
 
 // ===== Setup =====
@@ -651,7 +576,7 @@ void setup() {
   Wire.begin(0, 20);
   Wire.setClock(50000);
 
-  pinMode(button, INPUT_PULLUP);   
+  pinMode(button, INPUT_PULLUP);
   pinMode(buzzer, OUTPUT);
   pinMode(LED, OUTPUT);
   digitalWrite(buzzer, LOW);
@@ -667,7 +592,7 @@ void setup() {
   tft.fillScreen(ST77XX_BLACK);
   tft.setCursor(15, 5);
   //tft.setTextColor(ST77XX_GREEN);
-  tft.setTextColor(mygreen);
+  tft.setTextColor(myred);
   tft.println("Pomodoro");  
   tft.setCursor(30, 22);
   tft.println("Timer");  
@@ -676,23 +601,21 @@ void setup() {
     Serial.println("Check circuit. HTU21D not found!");    
   }
 
-  if (!connectSavedWiFi()) {
-    Serial.println("WiFi not connected, will keep retrying in loop().");
-    isConnected = false;
-  }else {
-    Serial.println("WiFi connected.");
-    isConnected = true;// Timezone GMT-3 (Brazil)
-    setenv("TZ", "<-03>3", 1);
-    tzset();
-    configTime(0, 0, "pool.ntp.org");
-    getTime();
-  }
+  // ===== Timezone =====
+  setenv("TZ", "<-03>3", 1);
+  tzset();
+
+  // ===== Initial NTP synchronization =====
+  if (syncClock()) {
+    Serial.println("[CLOCK] Initial synchronization complete");
+  } else {
+    Serial.println("[CLOCK] Initial synchronization failed");
+  }  
 
   if (startConfigPortal) {
     startAPPortal();
-    startConfigPortal= false;
+    startConfigPortal = false;
   } 
-
   drawUI();
 }
 
@@ -719,7 +642,6 @@ void handleButton() {
       if (reading == LOW) {
         pressStartTime = millis();
         longPressActive = true;
-        
       }
 
       // Button released
@@ -728,7 +650,7 @@ void handleButton() {
           unsigned long pressDuration = millis() - pressStartTime;
           longPressActive = false;
 
-          // ===== LONG PRESS → RESET TIMER =====
+          // ===== LONG PRESS -> RESET TIMER =====
           if (pressDuration >= LONG_PRESS_MS) {
             statuscontrol = false;
             settime = 0;
@@ -738,15 +660,15 @@ void handleButton() {
             return;
           }
 
-          // ===== SHORT PRESS → COUNT =====
+          // ===== SHORT PRESS -> COUNT =====
           if (!countingPresses) {
             countingPresses = true;
-            pressWindowStart = millis();
             pressCount = 0;
           }
-
+          pressWindowStart = millis();
           pressCount++;
           Serial.printf("Press count: %d\n", pressCount);
+          forceUIRefresh = true; 
         }
       }
     }
@@ -754,11 +676,11 @@ void handleButton() {
 
   lastReading = reading;
 
-  // ===== WINDOW CLOSED → PROCESS PRESSES =====
+  // ===== WINDOW CLOSED -> PROCESS PRESSES =====
   if (!statuscontrol && countingPresses && (millis() - pressWindowStart > PRESS_WINDOW_MS)) {
     
-    // 5 presses → start AP mode without sounding the buzzer
-    if(pressCount >= 5) {
+    // 5 presses -> start AP mode without sounding the buzzer
+    if (pressCount >= 5) {
       Serial.println("Starting Access Point mode...");
       countingPresses = false;
       buzzerActive = false;
@@ -767,20 +689,16 @@ void handleButton() {
       startAPPortal();
       return;
     }
-    ringTone(500);
-    // 1–4 presses → start timer
-    Serial.println("STARTING POMODORO!");
-    Serial.printf("Total presses: %d\n", pressCount);
+    ringTone(500);    
     pressCountToMinutes = pressCount * 15;   // Timer is multiples of 15 minutes
     settime = pressCountToMinutes;
 
     pomodoroStartTime = millis();
     statuscontrol = true;
-    justStarted= statuscontrol;
+    justStarted = statuscontrol;
     justFinished = true;
 
     countingPresses = false;
-
   }
 }
 
@@ -791,11 +709,9 @@ void updateSensors() {
 
   smoothtemp = tempSensorAvg.update(t);
   smoothhum  = humSensorAvg.update(h);
-
 }
 
 // ===== Loop =====
-
 void loop() {
   unsigned long nowMs = millis();
 
@@ -807,44 +723,34 @@ void loop() {
     return;
   }
 
-  // ===== WiFi connection check =====
-  static unsigned long lastWiFiCheck = 0;
-
-  if (nowMs - lastWiFiCheck >= 10000UL) {
-    lastWiFiCheck = nowMs;
-    ensureWiFi();
-  }
-
-  internetWatchdog();
-
   // ===== Main tasks =====
   handleButton();
   tickTimer();
   handleBuzzer();
 
   // ===== Sensor update =====
-  if (nowMs - lastSensorUpdate > SENSOR_INTERVAL_MS) {
+  if (nowMs - lastSensorUpdate >= SENSOR_INTERVAL_MS) {
     lastSensorUpdate = nowMs;
     updateSensors();
   }
 
-  // ===== Time API =====
-  if (nowMs - lastTimeUpdate > TIME_INTERVAL_MS) {
-    lastTimeUpdate = nowMs;
-    getTime();
+  // ===== NTP synchronization =====
+  if (!countingPresses &&
+      nowMs - lastSyncAttempt >= WIFI_SYNC_INTERVAL_MS) {
+    syncClock();
   }
 
   // ===== Display refresh =====
-  if ((nowMs - lastUIRefresh > UI_INTERVAL_MS) || justStarted || forceUIRefresh) {
+  if (!countingPresses &&
+      ((nowMs - lastUIRefresh >= UI_INTERVAL_MS) ||
+       justStarted || forceUIRefresh)) {
     justStarted = false;
     forceUIRefresh = false;
-    lastUIRefresh = nowMs;
+    lastUIRefresh = millis();
     drawUI();
   }
-
-  // ===== Normal polling =====
-  delay(10);
 }
+
 void drawTimeBar() {
   const int barWidth = tft.width();  // 128 pixels
   const int barHeight = 10;
@@ -869,18 +775,18 @@ void drawTimeBar() {
 
   // Draw remaining time
   if (remainingWidth > 0) {
-    tft.fillRect(barX, barY, remainingWidth, barHeight, mygreen);
+    tft.fillRect(barX, barY, remainingWidth, barHeight, myred);
   }
 }
-void blinkLED(){
-  if((millis() - totalPeriod > 5000) && blinking == false){
-    totalPeriod= millis();
+
+void blinkLED() {
+  if ((millis() - totalPeriod > 5000) && blinking == false) {
+    totalPeriod = millis();
     ledPeriod = millis();
     digitalWrite(LED, HIGH);
-    blinking= true;
-  }else{
-    if((millis() - ledPeriod > 300) && blinking == true){
-      
+    blinking = true;
+  } else {
+    if ((millis() - ledPeriod > ledTiming) && blinking == true) {
       digitalWrite(LED, LOW);
       blinking = false;
     }
@@ -890,13 +796,14 @@ void blinkLED(){
 void drawCloudIcon() {
   tft.drawBitmap(
     85,               // X position
-    116,               // Y position
+    116,              // Y position
     cloud,
     CLOUD_WIDTH,
     CLOUD_HEIGHT,
     ST77XX_WHITE      // Foreground color
   );
 }
+
 void drawClock2Icon() {
   tft.drawBitmap(
     85,               // X position
