@@ -16,7 +16,7 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include <Adafruit_Sensor.h>
-#include <Adafruit_AHTX0.h>
+#include "Adafruit_HTU21DF.h"
 	
 #define button 18
 #define buzzer 19
@@ -32,9 +32,8 @@
 
 // For 1.44" and 1.8" TFT with ST7735 use:
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
-Adafruit_AHTX0 aht;
+Adafruit_HTU21DF htu = Adafruit_HTU21DF();
 
-sensors_event_t humidity, temp;
 
 // ===== Network / AP =====
 WebServer server(80);
@@ -649,8 +648,8 @@ void internetWatchdog() {
 void setup() {
   Serial.begin(115200);
 
-  Wire.begin(1, 2);
-  Wire.setClock(100000);
+  Wire.begin(0, 20);
+  Wire.setClock(50000);
 
   pinMode(button, INPUT_PULLUP);   
   pinMode(buzzer, OUTPUT);
@@ -673,8 +672,8 @@ void setup() {
   tft.setCursor(30, 22);
   tft.println("Timer");  
 
-  if (! aht.begin()) {
-    Serial.println("Could not find AHT? Check wiring");    
+  if (!htu.begin()) {
+    Serial.println("Check circuit. HTU21D not found!");    
   }
 
   if (!connectSavedWiFi()) {
@@ -703,7 +702,7 @@ unsigned long pressWindowStart = 0;
 const unsigned long PRESS_WINDOW_MS = 4000;   // 4 seconds to collect presses
 
 void handleButton() {
-  bool reading = digitalRead(button);
+  bool reading = !digitalRead(button); // "!" for a NC push button
 
   // Debounce
   if (reading != lastReading) {
@@ -715,7 +714,7 @@ void handleButton() {
     // Button state changed
     if (reading != lastButtonState) {
       lastButtonState = reading;
-
+      Serial.println(reading == LOW ? "BUTTON PRESSED" : "BUTTON RELEASED");
       // Button pressed
       if (reading == LOW) {
         pressStartTime = millis();
@@ -747,6 +746,7 @@ void handleButton() {
           }
 
           pressCount++;
+          Serial.printf("Press count: %d\n", pressCount);
         }
       }
     }
@@ -769,6 +769,8 @@ void handleButton() {
     }
     ringTone(500);
     // 1–4 presses → start timer
+    Serial.println("STARTING POMODORO!");
+    Serial.printf("Total presses: %d\n", pressCount);
     pressCountToMinutes = pressCount * 15;   // Timer is multiples of 15 minutes
     settime = pressCountToMinutes;
 
@@ -784,14 +786,8 @@ void handleButton() {
 
 // ===== Sensors =====
 void updateSensors() {
-  if (aht.begin()) {
-    aht.getEvent(&humidity, &temp);// populate temp and humidity AHT21 objects with fresh data
-    t = temp.temperature;
-    h = humidity.relative_humidity;
-  } else {
-    t = 0;
-    h = 0;
-  }   
+  t = htu.readTemperature();
+  h = htu.readHumidity();    
 
   smoothtemp = tempSensorAvg.update(t);
   smoothhum  = humSensorAvg.update(h);
