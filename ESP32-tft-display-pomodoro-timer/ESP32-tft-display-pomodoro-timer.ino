@@ -127,6 +127,8 @@ WiFiUDP ntpUDP;
 #define CLOCK2_HEIGHT 23
 #define LOGO_WIDTH 120
 #define LOGO_HEIGHT 50
+#define ARROW_WIDTH 12
+#define ARROW_HEIGHT 11
 
 // generate images: https://javl.github.io/image2cpp/
 
@@ -191,6 +193,11 @@ const uint8_t logo [] PROGMEM = {
 	0x80, 0x01, 0xfe, 0x1f, 0xe1, 0xfe, 0x1f, 0xf0, 0xff, 0x0f, 0xf8, 0x7f, 0x87, 0xf8, 0x7f, 0x80, 
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+
+const uint8_t arrow [] PROGMEM = {
+	0x0f, 0x00, 0x0f, 0x00, 0x0f, 0x00, 0x0f, 0x00, 0x0f, 0x00, 0x0f, 0x00, 0x3f, 0xc0, 0x1f, 0x80, 
+	0x0f, 0x00, 0x06, 0x00, 0x00, 0x00
 };
 
 class MovingAverage {
@@ -294,10 +301,13 @@ void drawUI() {
   
 
   if(statuscontrol == false){
+    tft.setTextColor(myred, ST77XX_BLACK);
     tft.setCursor(30, 149);
     // Clear previous bar
     tft.fillRect(0, barY - 5, barWidth, barHeight + 5, ST77XX_BLACK);
+    drawArrowIcon();
     tft.print("Push button");
+    drawArrow2Icon();
   }else{
     tft.setCursor(0, 149);
     drawTimeBar();
@@ -894,5 +904,25 @@ void drawLogoIcon() {
     LOGO_WIDTH,
     LOGO_HEIGHT,
     ST77XX_WHITE      // Foreground color
+  );
+}
+void drawArrowIcon() {
+  tft.drawBitmap(
+    15,               // X position
+    147,               // Y position
+    arrow,
+    ARROW_WIDTH,
+    ARROW_HEIGHT,
+    ST77XX_RED      // Foreground color
+  );
+}
+void drawArrow2Icon() {
+  tft.drawBitmap(
+    98,               // X position
+    147,               // Y position
+    arrow,
+    ARROW_WIDTH,
+    ARROW_HEIGHT,
+    ST77XX_RED      // Foreground color
   );
 }
